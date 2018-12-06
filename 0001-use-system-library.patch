@@ -1,0 +1,26 @@
+From f0f74a0c0012be5768e8e8ea98f557f29e71354a Mon Sep 17 00:00:00 2001
+From: Jan Chaloupka <jchaloup@redhat.com>
+Date: Thu, 8 Oct 2015 15:17:35 +0200
+Subject: [PATCH] use system library
+
+---
+ cgo/blas.go | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/cgo/blas.go b/cgo/blas.go
+index e5cadf5..b87e2e0 100644
+--- a/cgo/blas.go
++++ b/cgo/blas.go
+@@ -7,7 +7,8 @@
+ package cgo
+ 
+ /*
+-#cgo CFLAGS: -g -O2
++#cgo CFLAGS: -g -O2 -I/usr/include/openblas
++#cgo LDFLAGS: -L/usr/lib64 -lopenblasp
+ #include "cblas.h"
+ */
+ import "C"
+-- 
+1.9.3
+

@@ -1,0 +1,1085 @@
+From a4d3ca0439cb62fe7110b0923e7f3e5186f38808 Mon Sep 17 00:00:00 2001
+From: Jan Chaloupka <jchaloup@redhat.com>
+Date: Thu, 8 Oct 2015 13:43:40 +0200
+Subject: [PATCH] internal to inteernal
+
+---
+ native/dgemm.go                       |   2 +-
+ native/general_single.go              |   2 +-
+ native/inteernal/math32/math.go       | 113 +++++++++++++++++
+ native/inteernal/math32/math_test.go  | 226 ++++++++++++++++++++++++++++++++++
+ native/inteernal/math32/sqrt.go       |  25 ++++
+ native/inteernal/math32/sqrt_amd64.go |  20 +++
+ native/inteernal/math32/sqrt_amd64.s  |  20 +++
+ native/internal/math32/math.go        | 113 -----------------
+ native/internal/math32/math_test.go   | 226 ----------------------------------
+ native/internal/math32/sqrt.go        |  25 ----
+ native/internal/math32/sqrt_amd64.go  |  20 ---
+ native/internal/math32/sqrt_amd64.s   |  20 ---
+ native/level1double.go                |   2 +-
+ native/level1double_ddot.go           |   2 +-
+ native/level1single.go                |   4 +-
+ native/level1single_dsdot.go          |   2 +-
+ native/level1single_sdot.go           |   2 +-
+ native/level1single_sdsdot.go         |   2 +-
+ native/level2double.go                |   2 +-
+ native/level2single.go                |   2 +-
+ native/level3double.go                |   2 +-
+ native/level3single.go                |   2 +-
+ native/sgemm.go                       |   2 +-
+ 23 files changed, 418 insertions(+), 418 deletions(-)
+ create mode 100644 native/inteernal/math32/math.go
+ create mode 100644 native/inteernal/math32/math_test.go
+ create mode 100644 native/inteernal/math32/sqrt.go
+ create mode 100644 native/inteernal/math32/sqrt_amd64.go
+ create mode 100644 native/inteernal/math32/sqrt_amd64.s
+ delete mode 100644 native/internal/math32/math.go
+ delete mode 100644 native/internal/math32/math_test.go
+ delete mode 100644 native/internal/math32/sqrt.go
+ delete mode 100644 native/internal/math32/sqrt_amd64.go
+ delete mode 100644 native/internal/math32/sqrt_amd64.s
+
+diff --git a/native/dgemm.go b/native/dgemm.go
+index 850f62c..8dc9920 100644
+--- a/native/dgemm.go
++++ b/native/dgemm.go
+@@ -10,7 +10,7 @@ import (
+ 	"sync"
+ 
+ 	"github.com/gonum/blas"
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ // Dgemm computes
+diff --git a/native/general_single.go b/native/general_single.go
+index bf648e5..8406d77 100644
+--- a/native/general_single.go
++++ b/native/general_single.go
+@@ -9,7 +9,7 @@ package native
+ import (
+ 	"errors"
+ 	"fmt"
+-	math "github.com/gonum/blas/native/internal/math32"
++	math "github.com/gonum/blas/native/inteernal/math32"
+ )
+ 
+ func newGeneral32(r, c int) general32 {
+diff --git a/native/inteernal/math32/math.go b/native/inteernal/math32/math.go
+new file mode 100644
+index 0000000..b33401b
+--- /dev/null
++++ b/native/inteernal/math32/math.go
+@@ -0,0 +1,113 @@
++// Copyright 2009 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Copyright ©2015 The gonum Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Package math32 provides float32 versions of standard library math package
++// routines used by gonum/blas/native.
++package math32
++
++import (
++	"math"
++)
++
++const (
++	unan    = 0x7fc00000
++	uinf    = 0x7f800000
++	uneginf = 0xff800000
++	mask    = 0x7f8 >> 3
++	shift   = 32 - 8 - 1
++	bias    = 127
++)
++
++// Abs returns the absolute value of x.
++//
++// Special cases are:
++//	Abs(±Inf) = +Inf
++//	Abs(NaN) = NaN
++func Abs(x float32) float32 {
++	switch {
++	case x < 0:
++		return -x
++	case x == 0:
++		return 0 // return correctly abs(-0)
++	}
++	return x
++}
++
++// Copysign returns a value with the magnitude
++// of x and the sign of y.
++func Copysign(x, y float32) float32 {
++	const sign = 1 << 31
++	return math.Float32frombits(math.Float32bits(x)&^sign | math.Float32bits(y)&sign)
++}
++
++// Hypot returns Sqrt(p*p + q*q), taking care to avoid
++// unnecessary overflow and underflow.
++//
++// Special cases are:
++//	Hypot(±Inf, q) = +Inf
++//	Hypot(p, ±Inf) = +Inf
++//	Hypot(NaN, q) = NaN
++//	Hypot(p, NaN) = NaN
++func Hypot(p, q float32) float32 {
++	// special cases
++	switch {
++	case IsInf(p, 0) || IsInf(q, 0):
++		return Inf(1)
++	case IsNaN(p) || IsNaN(q):
++		return NaN()
++	}
++	if p < 0 {
++		p = -p
++	}
++	if q < 0 {
++		q = -q
++	}
++	if p < q {
++		p, q = q, p
++	}
++	if p == 0 {
++		return 0
++	}
++	q = q / p
++	return p * Sqrt(1+q*q)
++}
++
++// Inf returns positive infinity if sign >= 0, negative infinity if sign < 0.
++func Inf(sign int) float32 {
++	var v uint32
++	if sign >= 0 {
++		v = uinf
++	} else {
++		v = uneginf
++	}
++	return math.Float32frombits(v)
++}
++
++// IsInf reports whether f is an infinity, according to sign.
++// If sign > 0, IsInf reports whether f is positive infinity.
++// If sign < 0, IsInf reports whether f is negative infinity.
++// If sign == 0, IsInf reports whether f is either infinity.
++func IsInf(f float32, sign int) bool {
++	// Test for infinity by comparing against maximum float.
++	// To avoid the floating-point hardware, could use:
++	//	x := math.Float32bits(f);
++	//	return sign >= 0 && x == uinf || sign <= 0 && x == uneginf;
++	return sign >= 0 && f > math.MaxFloat32 || sign <= 0 && f < -math.MaxFloat32
++}
++
++// IsNaN reports whether f is an IEEE 754 ``not-a-number'' value.
++func IsNaN(f float32) (is bool) {
++	// IEEE 754 says that only NaNs satisfy f != f.
++	// To avoid the floating-point hardware, could use:
++	//	x := math.Float32bits(f);
++	//	return uint32(x>>shift)&mask == mask && x != uinf && x != uneginf
++	return f != f
++}
++
++// NaN returns an IEEE 754 ``not-a-number'' value.
++func NaN() float32 { return math.Float32frombits(unan) }
+diff --git a/native/inteernal/math32/math_test.go b/native/inteernal/math32/math_test.go
+new file mode 100644
+index 0000000..f068927
+--- /dev/null
++++ b/native/inteernal/math32/math_test.go
+@@ -0,0 +1,226 @@
++// Copyright ©2015 The gonum Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++package math32
++
++import (
++	"math"
++	"testing"
++	"testing/quick"
++
++	"github.com/gonum/floats"
++)
++
++const tol = 1e-7
++
++func TestAbs(t *testing.T) {
++	f := func(x float32) bool {
++		y := Abs(x)
++		return y == float32(math.Abs(float64(x)))
++	}
++	if err := quick.Check(f, nil); err != nil {
++		t.Error(err)
++	}
++}
++
++func TestCopySign(t *testing.T) {
++	f := func(x struct{ X, Y float32 }) bool {
++		y := Copysign(x.X, x.Y)
++		return y == float32(math.Copysign(float64(x.X), float64(x.Y)))
++	}
++	if err := quick.Check(f, nil); err != nil {
++		t.Error(err)
++	}
++}
++
++func TestHypot(t *testing.T) {
++	f := func(x struct{ X, Y float32 }) bool {
++		y := Hypot(x.X, x.Y)
++		if math.Hypot(float64(x.X), float64(x.Y)) > math.MaxFloat32 {
++			return true
++		}
++		return floats.EqualWithinRel(float64(y), math.Hypot(float64(x.X), float64(x.Y)), tol)
++	}
++	if err := quick.Check(f, nil); err != nil {
++		t.Error(err)
++	}
++}
++
++func TestInf(t *testing.T) {
++	if float64(Inf(1)) != math.Inf(1) || float64(Inf(-1)) != math.Inf(-1) {
++		t.Error("float32(inf) not infinite")
++	}
++}
++
++func TestIsInf(t *testing.T) {
++	posInf := float32(math.Inf(1))
++	negInf := float32(math.Inf(-1))
++	if !IsInf(posInf, 0) || !IsInf(negInf, 0) || !IsInf(posInf, 1) || !IsInf(negInf, -1) || IsInf(posInf, -1) || IsInf(negInf, 1) {
++		t.Error("unexpected isInf value")
++	}
++	f := func(x struct {
++		F    float32
++		Sign int
++	}) bool {
++		y := IsInf(x.F, x.Sign)
++		return y == math.IsInf(float64(x.F), x.Sign)
++	}
++	if err := quick.Check(f, nil); err != nil {
++		t.Error(err)
++	}
++}
++
++func TestIsNaN(t *testing.T) {
++	f := func(x float32) bool {
++		y := IsNaN(x)
++		return y == math.IsNaN(float64(x))
++	}
++	if err := quick.Check(f, nil); err != nil {
++		t.Error(err)
++	}
++}
++
++func TestNaN(t *testing.T) {
++	if !math.IsNaN(float64(NaN())) {
++		t.Errorf("float32(nan) is a number: %f", NaN())
++	}
++}
++
++func TestSqrt(t *testing.T) {
++	f := func(x float32) bool {
++		y := Sqrt(x)
++		if IsNaN(y) && IsNaN(sqrt(x)) {
++			return true
++		}
++		return floats.EqualWithinRel(float64(y), float64(sqrt(x)), tol)
++	}
++	if err := quick.Check(f, nil); err != nil {
++		t.Error(err)
++	}
++}
++
++// Copyright 2009 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// The original C code and the long comment below are
++// from FreeBSD's /usr/src/lib/msun/src/e_sqrt.c and
++// came with this notice.  The go code is a simplified
++// version of the original C.
++//
++// ====================================================
++// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
++//
++// Developed at SunPro, a Sun Microsystems, Inc. business.
++// Permission to use, copy, modify, and distribute this
++// software is freely granted, provided that this notice
++// is preserved.
++// ====================================================
++//
++// __ieee754_sqrt(x)
++// Return correctly rounded sqrt.
++//           -----------------------------------------
++//           | Use the hardware sqrt if you have one |
++//           -----------------------------------------
++// Method:
++//   Bit by bit method using integer arithmetic. (Slow, but portable)
++//   1. Normalization
++//      Scale x to y in [1,4) with even powers of 2:
++//      find an integer k such that  1 <= (y=x*2**(2k)) < 4, then
++//              sqrt(x) = 2**k * sqrt(y)
++//   2. Bit by bit computation
++//      Let q  = sqrt(y) truncated to i bit after binary point (q = 1),
++//           i                                                   0
++//                                     i+1         2
++//          s  = 2*q , and      y  =  2   * ( y - q  ).          (1)
++//           i      i            i                 i
++//
++//      To compute q    from q , one checks whether
++//                  i+1       i
++//
++//                            -(i+1) 2
++//                      (q + 2      )  <= y.                     (2)
++//                        i
++//                                                            -(i+1)
++//      If (2) is false, then q   = q ; otherwise q   = q  + 2      .
++//                             i+1   i             i+1   i
++//
++//      With some algebraic manipulation, it is not difficult to see
++//      that (2) is equivalent to
++//                             -(i+1)
++//                      s  +  2       <= y                       (3)
++//                       i                i
++//
++//      The advantage of (3) is that s  and y  can be computed by
++//                                    i      i
++//      the following recurrence formula:
++//          if (3) is false
++//
++//          s     =  s  ,       y    = y   ;                     (4)
++//           i+1      i          i+1    i
++//
++//      otherwise,
++//                         -i                      -(i+1)
++//          s     =  s  + 2  ,  y    = y  -  s  - 2              (5)
++//           i+1      i          i+1    i     i
++//
++//      One may easily use induction to prove (4) and (5).
++//      Note. Since the left hand side of (3) contain only i+2 bits,
++//            it does not necessary to do a full (53-bit) comparison
++//            in (3).
++//   3. Final rounding
++//      After generating the 53 bits result, we compute one more bit.
++//      Together with the remainder, we can decide whether the
++//      result is exact, bigger than 1/2ulp, or less than 1/2ulp
++//      (it will never equal to 1/2ulp).
++//      The rounding mode can be detected by checking whether
++//      huge + tiny is equal to huge, and whether huge - tiny is
++//      equal to huge for some floating point number "huge" and "tiny".
++//
++func sqrt(x float32) float32 {
++	// special cases
++	switch {
++	case x == 0 || IsNaN(x) || IsInf(x, 1):
++		return x
++	case x < 0:
++		return NaN()
++	}
++	ix := math.Float32bits(x)
++	// normalize x
++	exp := int((ix >> shift) & mask)
++	if exp == 0 { // subnormal x
++		for ix&1<<shift == 0 {
++			ix <<= 1
++			exp--
++		}
++		exp++
++	}
++	exp -= bias // unbias exponent
++	ix &^= mask << shift
++	ix |= 1 << shift
++	if exp&1 == 1 { // odd exp, double x to make it even
++		ix <<= 1
++	}
++	exp >>= 1 // exp = exp/2, exponent of square root
++	// generate sqrt(x) bit by bit
++	ix <<= 1
++	var q, s uint32               // q = sqrt(x)
++	r := uint32(1 << (shift + 1)) // r = moving bit from MSB to LSB
++	for r != 0 {
++		t := s + r
++		if t <= ix {
++			s = t + r
++			ix -= t
++			q += r
++		}
++		ix <<= 1
++		r >>= 1
++	}
++	// final rounding
++	if ix != 0 { // remainder, result not exact
++		q += q & 1 // round according to extra bit
++	}
++	ix = q>>1 + uint32(exp-1+bias)<<shift // significand + biased exponent
++	return math.Float32frombits(ix)
++}
+diff --git a/native/inteernal/math32/sqrt.go b/native/inteernal/math32/sqrt.go
+new file mode 100644
+index 0000000..058b731
+--- /dev/null
++++ b/native/inteernal/math32/sqrt.go
+@@ -0,0 +1,25 @@
++// Copyright ©2015 The gonum Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//+build !amd64 noasm
++
++package math32
++
++import (
++	"math"
++)
++
++// Sqrt returns the square root of x.
++//
++// Special cases are:
++//	Sqrt(+Inf) = +Inf
++//	Sqrt(±0) = ±0
++//	Sqrt(x < 0) = NaN
++//	Sqrt(NaN) = NaN
++func Sqrt(x float32) float32 {
++	// FIXME(kortschak): Direct translation of the math package
++	// asm code for 386 fails to build. No test hardware is available
++	// for arm, so using conversion instead.
++	return float32(math.Sqrt(float64(x)))
++}
+diff --git a/native/inteernal/math32/sqrt_amd64.go b/native/inteernal/math32/sqrt_amd64.go
+new file mode 100644
+index 0000000..ca11639
+--- /dev/null
++++ b/native/inteernal/math32/sqrt_amd64.go
+@@ -0,0 +1,20 @@
++// Copyright 2009 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Copyright ©2015 The gonum Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//+build !noasm
++
++package math32
++
++// Sqrt returns the square root of x.
++//
++// Special cases are:
++//	Sqrt(+Inf) = +Inf
++//	Sqrt(±0) = ±0
++//	Sqrt(x < 0) = NaN
++//	Sqrt(NaN) = NaN
++func Sqrt(x float32) float32
+diff --git a/native/inteernal/math32/sqrt_amd64.s b/native/inteernal/math32/sqrt_amd64.s
+new file mode 100644
+index 0000000..595ce5d
+--- /dev/null
++++ b/native/inteernal/math32/sqrt_amd64.s
+@@ -0,0 +1,20 @@
++// Copyright 2009 The Go Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++// Copyright ©2015 The gonum Authors. All rights reserved.
++// Use of this source code is governed by a BSD-style
++// license that can be found in the LICENSE file.
++
++//+build !noasm
++
++// TODO(kortschak): use textflag.h after we drop Go 1.3 support
++//#include "textflag.h"
++// Don't insert stack check preamble.
++#define NOSPLIT	4
++
++// func Sqrt(x float32) float32
++TEXT ·Sqrt(SB),NOSPLIT,$0
++	SQRTSS x+0(FP), X0
++	MOVSS X0, ret+8(FP)
++	RET
+diff --git a/native/internal/math32/math.go b/native/internal/math32/math.go
+deleted file mode 100644
+index b33401b..0000000
+--- a/native/internal/math32/math.go
++++ /dev/null
+@@ -1,113 +0,0 @@
+-// Copyright 2009 The Go Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-// Copyright ©2015 The gonum Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-// Package math32 provides float32 versions of standard library math package
+-// routines used by gonum/blas/native.
+-package math32
+-
+-import (
+-	"math"
+-)
+-
+-const (
+-	unan    = 0x7fc00000
+-	uinf    = 0x7f800000
+-	uneginf = 0xff800000
+-	mask    = 0x7f8 >> 3
+-	shift   = 32 - 8 - 1
+-	bias    = 127
+-)
+-
+-// Abs returns the absolute value of x.
+-//
+-// Special cases are:
+-//	Abs(±Inf) = +Inf
+-//	Abs(NaN) = NaN
+-func Abs(x float32) float32 {
+-	switch {
+-	case x < 0:
+-		return -x
+-	case x == 0:
+-		return 0 // return correctly abs(-0)
+-	}
+-	return x
+-}
+-
+-// Copysign returns a value with the magnitude
+-// of x and the sign of y.
+-func Copysign(x, y float32) float32 {
+-	const sign = 1 << 31
+-	return math.Float32frombits(math.Float32bits(x)&^sign | math.Float32bits(y)&sign)
+-}
+-
+-// Hypot returns Sqrt(p*p + q*q), taking care to avoid
+-// unnecessary overflow and underflow.
+-//
+-// Special cases are:
+-//	Hypot(±Inf, q) = +Inf
+-//	Hypot(p, ±Inf) = +Inf
+-//	Hypot(NaN, q) = NaN
+-//	Hypot(p, NaN) = NaN
+-func Hypot(p, q float32) float32 {
+-	// special cases
+-	switch {
+-	case IsInf(p, 0) || IsInf(q, 0):
+-		return Inf(1)
+-	case IsNaN(p) || IsNaN(q):
+-		return NaN()
+-	}
+-	if p < 0 {
+-		p = -p
+-	}
+-	if q < 0 {
+-		q = -q
+-	}
+-	if p < q {
+-		p, q = q, p
+-	}
+-	if p == 0 {
+-		return 0
+-	}
+-	q = q / p
+-	return p * Sqrt(1+q*q)
+-}
+-
+-// Inf returns positive infinity if sign >= 0, negative infinity if sign < 0.
+-func Inf(sign int) float32 {
+-	var v uint32
+-	if sign >= 0 {
+-		v = uinf
+-	} else {
+-		v = uneginf
+-	}
+-	return math.Float32frombits(v)
+-}
+-
+-// IsInf reports whether f is an infinity, according to sign.
+-// If sign > 0, IsInf reports whether f is positive infinity.
+-// If sign < 0, IsInf reports whether f is negative infinity.
+-// If sign == 0, IsInf reports whether f is either infinity.
+-func IsInf(f float32, sign int) bool {
+-	// Test for infinity by comparing against maximum float.
+-	// To avoid the floating-point hardware, could use:
+-	//	x := math.Float32bits(f);
+-	//	return sign >= 0 && x == uinf || sign <= 0 && x == uneginf;
+-	return sign >= 0 && f > math.MaxFloat32 || sign <= 0 && f < -math.MaxFloat32
+-}
+-
+-// IsNaN reports whether f is an IEEE 754 ``not-a-number'' value.
+-func IsNaN(f float32) (is bool) {
+-	// IEEE 754 says that only NaNs satisfy f != f.
+-	// To avoid the floating-point hardware, could use:
+-	//	x := math.Float32bits(f);
+-	//	return uint32(x>>shift)&mask == mask && x != uinf && x != uneginf
+-	return f != f
+-}
+-
+-// NaN returns an IEEE 754 ``not-a-number'' value.
+-func NaN() float32 { return math.Float32frombits(unan) }
+diff --git a/native/internal/math32/math_test.go b/native/internal/math32/math_test.go
+deleted file mode 100644
+index f068927..0000000
+--- a/native/internal/math32/math_test.go
++++ /dev/null
+@@ -1,226 +0,0 @@
+-// Copyright ©2015 The gonum Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-package math32
+-
+-import (
+-	"math"
+-	"testing"
+-	"testing/quick"
+-
+-	"github.com/gonum/floats"
+-)
+-
+-const tol = 1e-7
+-
+-func TestAbs(t *testing.T) {
+-	f := func(x float32) bool {
+-		y := Abs(x)
+-		return y == float32(math.Abs(float64(x)))
+-	}
+-	if err := quick.Check(f, nil); err != nil {
+-		t.Error(err)
+-	}
+-}
+-
+-func TestCopySign(t *testing.T) {
+-	f := func(x struct{ X, Y float32 }) bool {
+-		y := Copysign(x.X, x.Y)
+-		return y == float32(math.Copysign(float64(x.X), float64(x.Y)))
+-	}
+-	if err := quick.Check(f, nil); err != nil {
+-		t.Error(err)
+-	}
+-}
+-
+-func TestHypot(t *testing.T) {
+-	f := func(x struct{ X, Y float32 }) bool {
+-		y := Hypot(x.X, x.Y)
+-		if math.Hypot(float64(x.X), float64(x.Y)) > math.MaxFloat32 {
+-			return true
+-		}
+-		return floats.EqualWithinRel(float64(y), math.Hypot(float64(x.X), float64(x.Y)), tol)
+-	}
+-	if err := quick.Check(f, nil); err != nil {
+-		t.Error(err)
+-	}
+-}
+-
+-func TestInf(t *testing.T) {
+-	if float64(Inf(1)) != math.Inf(1) || float64(Inf(-1)) != math.Inf(-1) {
+-		t.Error("float32(inf) not infinite")
+-	}
+-}
+-
+-func TestIsInf(t *testing.T) {
+-	posInf := float32(math.Inf(1))
+-	negInf := float32(math.Inf(-1))
+-	if !IsInf(posInf, 0) || !IsInf(negInf, 0) || !IsInf(posInf, 1) || !IsInf(negInf, -1) || IsInf(posInf, -1) || IsInf(negInf, 1) {
+-		t.Error("unexpected isInf value")
+-	}
+-	f := func(x struct {
+-		F    float32
+-		Sign int
+-	}) bool {
+-		y := IsInf(x.F, x.Sign)
+-		return y == math.IsInf(float64(x.F), x.Sign)
+-	}
+-	if err := quick.Check(f, nil); err != nil {
+-		t.Error(err)
+-	}
+-}
+-
+-func TestIsNaN(t *testing.T) {
+-	f := func(x float32) bool {
+-		y := IsNaN(x)
+-		return y == math.IsNaN(float64(x))
+-	}
+-	if err := quick.Check(f, nil); err != nil {
+-		t.Error(err)
+-	}
+-}
+-
+-func TestNaN(t *testing.T) {
+-	if !math.IsNaN(float64(NaN())) {
+-		t.Errorf("float32(nan) is a number: %f", NaN())
+-	}
+-}
+-
+-func TestSqrt(t *testing.T) {
+-	f := func(x float32) bool {
+-		y := Sqrt(x)
+-		if IsNaN(y) && IsNaN(sqrt(x)) {
+-			return true
+-		}
+-		return floats.EqualWithinRel(float64(y), float64(sqrt(x)), tol)
+-	}
+-	if err := quick.Check(f, nil); err != nil {
+-		t.Error(err)
+-	}
+-}
+-
+-// Copyright 2009 The Go Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-// The original C code and the long comment below are
+-// from FreeBSD's /usr/src/lib/msun/src/e_sqrt.c and
+-// came with this notice.  The go code is a simplified
+-// version of the original C.
+-//
+-// ====================================================
+-// Copyright (C) 1993 by Sun Microsystems, Inc. All rights reserved.
+-//
+-// Developed at SunPro, a Sun Microsystems, Inc. business.
+-// Permission to use, copy, modify, and distribute this
+-// software is freely granted, provided that this notice
+-// is preserved.
+-// ====================================================
+-//
+-// __ieee754_sqrt(x)
+-// Return correctly rounded sqrt.
+-//           -----------------------------------------
+-//           | Use the hardware sqrt if you have one |
+-//           -----------------------------------------
+-// Method:
+-//   Bit by bit method using integer arithmetic. (Slow, but portable)
+-//   1. Normalization
+-//      Scale x to y in [1,4) with even powers of 2:
+-//      find an integer k such that  1 <= (y=x*2**(2k)) < 4, then
+-//              sqrt(x) = 2**k * sqrt(y)
+-//   2. Bit by bit computation
+-//      Let q  = sqrt(y) truncated to i bit after binary point (q = 1),
+-//           i                                                   0
+-//                                     i+1         2
+-//          s  = 2*q , and      y  =  2   * ( y - q  ).          (1)
+-//           i      i            i                 i
+-//
+-//      To compute q    from q , one checks whether
+-//                  i+1       i
+-//
+-//                            -(i+1) 2
+-//                      (q + 2      )  <= y.                     (2)
+-//                        i
+-//                                                            -(i+1)
+-//      If (2) is false, then q   = q ; otherwise q   = q  + 2      .
+-//                             i+1   i             i+1   i
+-//
+-//      With some algebraic manipulation, it is not difficult to see
+-//      that (2) is equivalent to
+-//                             -(i+1)
+-//                      s  +  2       <= y                       (3)
+-//                       i                i
+-//
+-//      The advantage of (3) is that s  and y  can be computed by
+-//                                    i      i
+-//      the following recurrence formula:
+-//          if (3) is false
+-//
+-//          s     =  s  ,       y    = y   ;                     (4)
+-//           i+1      i          i+1    i
+-//
+-//      otherwise,
+-//                         -i                      -(i+1)
+-//          s     =  s  + 2  ,  y    = y  -  s  - 2              (5)
+-//           i+1      i          i+1    i     i
+-//
+-//      One may easily use induction to prove (4) and (5).
+-//      Note. Since the left hand side of (3) contain only i+2 bits,
+-//            it does not necessary to do a full (53-bit) comparison
+-//            in (3).
+-//   3. Final rounding
+-//      After generating the 53 bits result, we compute one more bit.
+-//      Together with the remainder, we can decide whether the
+-//      result is exact, bigger than 1/2ulp, or less than 1/2ulp
+-//      (it will never equal to 1/2ulp).
+-//      The rounding mode can be detected by checking whether
+-//      huge + tiny is equal to huge, and whether huge - tiny is
+-//      equal to huge for some floating point number "huge" and "tiny".
+-//
+-func sqrt(x float32) float32 {
+-	// special cases
+-	switch {
+-	case x == 0 || IsNaN(x) || IsInf(x, 1):
+-		return x
+-	case x < 0:
+-		return NaN()
+-	}
+-	ix := math.Float32bits(x)
+-	// normalize x
+-	exp := int((ix >> shift) & mask)
+-	if exp == 0 { // subnormal x
+-		for ix&1<<shift == 0 {
+-			ix <<= 1
+-			exp--
+-		}
+-		exp++
+-	}
+-	exp -= bias // unbias exponent
+-	ix &^= mask << shift
+-	ix |= 1 << shift
+-	if exp&1 == 1 { // odd exp, double x to make it even
+-		ix <<= 1
+-	}
+-	exp >>= 1 // exp = exp/2, exponent of square root
+-	// generate sqrt(x) bit by bit
+-	ix <<= 1
+-	var q, s uint32               // q = sqrt(x)
+-	r := uint32(1 << (shift + 1)) // r = moving bit from MSB to LSB
+-	for r != 0 {
+-		t := s + r
+-		if t <= ix {
+-			s = t + r
+-			ix -= t
+-			q += r
+-		}
+-		ix <<= 1
+-		r >>= 1
+-	}
+-	// final rounding
+-	if ix != 0 { // remainder, result not exact
+-		q += q & 1 // round according to extra bit
+-	}
+-	ix = q>>1 + uint32(exp-1+bias)<<shift // significand + biased exponent
+-	return math.Float32frombits(ix)
+-}
+diff --git a/native/internal/math32/sqrt.go b/native/internal/math32/sqrt.go
+deleted file mode 100644
+index 058b731..0000000
+--- a/native/internal/math32/sqrt.go
++++ /dev/null
+@@ -1,25 +0,0 @@
+-// Copyright ©2015 The gonum Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-//+build !amd64 noasm
+-
+-package math32
+-
+-import (
+-	"math"
+-)
+-
+-// Sqrt returns the square root of x.
+-//
+-// Special cases are:
+-//	Sqrt(+Inf) = +Inf
+-//	Sqrt(±0) = ±0
+-//	Sqrt(x < 0) = NaN
+-//	Sqrt(NaN) = NaN
+-func Sqrt(x float32) float32 {
+-	// FIXME(kortschak): Direct translation of the math package
+-	// asm code for 386 fails to build. No test hardware is available
+-	// for arm, so using conversion instead.
+-	return float32(math.Sqrt(float64(x)))
+-}
+diff --git a/native/internal/math32/sqrt_amd64.go b/native/internal/math32/sqrt_amd64.go
+deleted file mode 100644
+index ca11639..0000000
+--- a/native/internal/math32/sqrt_amd64.go
++++ /dev/null
+@@ -1,20 +0,0 @@
+-// Copyright 2009 The Go Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-// Copyright ©2015 The gonum Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-//+build !noasm
+-
+-package math32
+-
+-// Sqrt returns the square root of x.
+-//
+-// Special cases are:
+-//	Sqrt(+Inf) = +Inf
+-//	Sqrt(±0) = ±0
+-//	Sqrt(x < 0) = NaN
+-//	Sqrt(NaN) = NaN
+-func Sqrt(x float32) float32
+diff --git a/native/internal/math32/sqrt_amd64.s b/native/internal/math32/sqrt_amd64.s
+deleted file mode 100644
+index 595ce5d..0000000
+--- a/native/internal/math32/sqrt_amd64.s
++++ /dev/null
+@@ -1,20 +0,0 @@
+-// Copyright 2009 The Go Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-// Copyright ©2015 The gonum Authors. All rights reserved.
+-// Use of this source code is governed by a BSD-style
+-// license that can be found in the LICENSE file.
+-
+-//+build !noasm
+-
+-// TODO(kortschak): use textflag.h after we drop Go 1.3 support
+-//#include "textflag.h"
+-// Don't insert stack check preamble.
+-#define NOSPLIT	4
+-
+-// func Sqrt(x float32) float32
+-TEXT ·Sqrt(SB),NOSPLIT,$0
+-	SQRTSS x+0(FP), X0
+-	MOVSS X0, ret+8(FP)
+-	RET
+diff --git a/native/level1double.go b/native/level1double.go
+index 0d77243..65f2972 100644
+--- a/native/level1double.go
++++ b/native/level1double.go
+@@ -8,7 +8,7 @@ import (
+ 	"math"
+ 
+ 	"github.com/gonum/blas"
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ var _ blas.Float64Level1 = Implementation{}
+diff --git a/native/level1double_ddot.go b/native/level1double_ddot.go
+index 7af4e04..84a16ed 100644
+--- a/native/level1double_ddot.go
++++ b/native/level1double_ddot.go
+@@ -5,7 +5,7 @@
+ package native
+ 
+ import (
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ // Ddot computes the dot product of the two vectors
+diff --git a/native/level1single.go b/native/level1single.go
+index 6bcba83..63ea2ce 100644
+--- a/native/level1single.go
++++ b/native/level1single.go
+@@ -7,10 +7,10 @@
+ package native
+ 
+ import (
+-	math "github.com/gonum/blas/native/internal/math32"
++	math "github.com/gonum/blas/native/inteernal/math32"
+ 
+ 	"github.com/gonum/blas"
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ var _ blas.Float32Level1 = Implementation{}
+diff --git a/native/level1single_dsdot.go b/native/level1single_dsdot.go
+index 4665a01..a438155 100644
+--- a/native/level1single_dsdot.go
++++ b/native/level1single_dsdot.go
+@@ -7,7 +7,7 @@
+ package native
+ 
+ import (
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ // Dsdot computes the dot product of the two vectors
+diff --git a/native/level1single_sdot.go b/native/level1single_sdot.go
+index 1e5b565..7d96b74 100644
+--- a/native/level1single_sdot.go
++++ b/native/level1single_sdot.go
+@@ -7,7 +7,7 @@
+ package native
+ 
+ import (
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ // Sdot computes the dot product of the two vectors
+diff --git a/native/level1single_sdsdot.go b/native/level1single_sdsdot.go
+index d58be3d..79543d4 100644
+--- a/native/level1single_sdsdot.go
++++ b/native/level1single_sdsdot.go
+@@ -7,7 +7,7 @@
+ package native
+ 
+ import (
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ // Sdsdot computes the dot product of the two vectors plus a constant
+diff --git a/native/level2double.go b/native/level2double.go
+index 6d59559..af62cd1 100644
+--- a/native/level2double.go
++++ b/native/level2double.go
+@@ -6,7 +6,7 @@ package native
+ 
+ import (
+ 	"github.com/gonum/blas"
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ var _ blas.Float64Level2 = Implementation{}
+diff --git a/native/level2single.go b/native/level2single.go
+index b213ad6..6720c0e 100644
+--- a/native/level2single.go
++++ b/native/level2single.go
+@@ -8,7 +8,7 @@ package native
+ 
+ import (
+ 	"github.com/gonum/blas"
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ var _ blas.Float32Level2 = Implementation{}
+diff --git a/native/level3double.go b/native/level3double.go
+index 5a19652..47d5d15 100644
+--- a/native/level3double.go
++++ b/native/level3double.go
+@@ -6,7 +6,7 @@ package native
+ 
+ import (
+ 	"github.com/gonum/blas"
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ var _ blas.Float64Level3 = Implementation{}
+diff --git a/native/level3single.go b/native/level3single.go
+index 6bc9a56..82212a0 100644
+--- a/native/level3single.go
++++ b/native/level3single.go
+@@ -8,7 +8,7 @@ package native
+ 
+ import (
+ 	"github.com/gonum/blas"
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ var _ blas.Float32Level3 = Implementation{}
+diff --git a/native/sgemm.go b/native/sgemm.go
+index 047d4e5..0387945 100644
+--- a/native/sgemm.go
++++ b/native/sgemm.go
+@@ -12,7 +12,7 @@ import (
+ 	"sync"
+ 
+ 	"github.com/gonum/blas"
+-	"github.com/gonum/internal/asm"
++	"github.com/gonum/inteernal/asm"
+ )
+ 
+ // Sgemm computes
+-- 
+1.9.3
+
